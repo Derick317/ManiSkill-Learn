@@ -8,10 +8,11 @@ from copy import deepcopy
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "32"
 os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 
-from mani_skill_learn.env import save_eval_statistics
+from mani_skill_learn.env import save_eval_statistics, Evaluation
 from mani_skill_learn.utils.meta import Config, DictAction, set_random_seed, collect_env, get_logger
 
 
@@ -74,7 +75,7 @@ def parse_args():
 
 
 def main_mfrl_brl(cfg, args, rollout, evaluator, logger):
-    from mani_skill_learn.methods.builder import build_mfrl, build_brl, MFRL, BRL
+    from mani_skill_learn.methods.builder import build_mfrl, build_brl, build_mbrl, MFRL, BRL, MBRL
     from mani_skill_learn.apis.train_rl import train_rl
     from mani_skill_learn.env import build_replay
     from mani_skill_learn.utils.torch import load_checkpoint
@@ -86,13 +87,20 @@ def main_mfrl_brl(cfg, args, rollout, evaluator, logger):
         agent = build_mfrl(cfg.agent)
     elif cfg.agent.type in BRL:
         agent = build_brl(cfg.agent)
+    elif cfg.agent.type in MBRL:
+        agent_cfg = cfg.agent
+        agent_cfg['env_cfg'] = deepcopy(cfg.env_cfg)
+        agent = build_mbrl(cfg.agent)
+        if cfg.agent.type == 'PurePlanning':
+            assert rollout is None, "For pure planning, you just need to evalutate!"
+            assert isinstance(evaluator, Evaluation), "Batchsize of evaluation must be one!"
     else:
         raise NotImplementedError("")
 
     if cfg.get('resume_from', None) is not None:
         load_checkpoint(agent, cfg.resume_from, map_location='cpu')
 
-    if args.gpu_ids is not None and len(args.gpu_ids) > 0:
+    if args.gpu_ids is not None and len(args.gpu_ids) > 0 and cfg.agent.type != 'PurePlanning':
         agent.to('cuda')
 
     if (cfg.get('eval_cfg', None) is not None and (cfg.eval_cfg.get('num_procs', 1) > 1 and
@@ -191,7 +199,7 @@ def main():
     # create work_dir
     os.makedirs(osp.abspath(cfg.work_dir), exist_ok=True)
     # dump config
-    if not args.evaluation:
+    if not (args.evaluation and not cfg.eval_cfg.save_log):
         cfg.dump(osp.join(cfg.work_dir, osp.basename(args.config)))
         # init the logger before other steps
         logger = get_logger(name=cfg.env_cfg.env_name, log_file=osp.join(cfg.work_dir, f'{timestamp}.log'),
@@ -249,8 +257,8 @@ def main():
         cfg.agent['action_space'] = action_space
         logger.info(f'State shape:{obs_shape}, action shape:{action_space}')
 
-    from mani_skill_learn.methods.builder import MFRL, BRL
-    if cfg.agent.type in MFRL or cfg.agent.type in BRL:
+    from mani_skill_learn.methods.builder import MFRL, BRL, MBRL
+    if cfg.agent.type in MFRL or cfg.agent.type in BRL or cfg.agent.type in MBRL:
         main_mfrl_brl(cfg, args, rollout, evaluator, logger)
     else:
         logger.error(f'No such agent type {cfg.agent.type}')

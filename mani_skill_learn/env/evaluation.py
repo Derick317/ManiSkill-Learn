@@ -2,16 +2,17 @@ import warnings
 
 warnings.simplefilter(action='ignore')
 
-import copy, cv2, numpy as np, os, os.path as osp, glob, shutil
+import copy, cv2, time, numpy as np, os, os.path as osp, glob, shutil
 from h5py import File
 from .env_utils import build_env, true_done
 from mani_skill_learn.utils.math import split_num
 from .replay_buffer import ReplayMemory
 from .env_utils import get_env_state
 from mani_skill_learn.utils.fileio import merge_h5_trajectory, dump
-from mani_skill_learn.utils.data import (flatten_dict, to_np, compress_size, dict_to_str, concat_list, number_to_str, unsqueeze,
-                             stack_list_of_array)
+from mani_skill_learn.utils.data import (flatten_dict, to_np, compress_size, dict_to_str, concat_list, number_to_str,
+                                         unsqueeze, stack_list_of_array)
 from mani_skill_learn.utils.meta import get_logger, get_total_memory, flush_print
+from mani_skill_learn.utils.torch import TensorboardLogger
 from .builder import EVALUATIONS
 
 
@@ -30,7 +31,7 @@ def save_eval_statistics(folder, lengths, rewards, finishes, logger=None):
 @EVALUATIONS.register_module()
 class Evaluation:
     def __init__(self, env_cfg, worker_id=None, save_traj=True, save_video=True, use_hidden_state=False, horizon=None,
-                 use_log=True, log_every_step=False, sample_mode='eval', **kwargs):
+                 use_log=True, log_every_step=False, use_tf_log=False, sample_mode='eval', **kwargs):
         env_cfg = copy.deepcopy(env_cfg)
         env_cfg['unwrapped'] = False
         self.env = build_env(env_cfg)
@@ -46,6 +47,7 @@ class Evaluation:
         self.log_every_step = self.use_log and log_every_step
         self.use_hidden_state = use_hidden_state
         self.sample_mode = sample_mode
+        self.use_tf_log = use_tf_log
 
         self.work_dir, self.video_dir, self.trajectory_path = None, None, None
         self.h5_file = None
@@ -86,6 +88,8 @@ class Evaluation:
                 self.h5_file = File(self.trajectory_path, 'w')
                 if self.should_print:
                     self.logger(f"Save trajectory at {self.trajectory_path}.")
+            if self.use_tf_log:
+                self.tf_logger = TensorboardLogger(work_dir)
 
         self.episode_lens, self.episode_rewards, self.episode_finishes = [], [], []
         self.recent_obs = None
@@ -137,6 +141,15 @@ class Evaluation:
 
         if self.log_every_step:
             self.logger(f'Episode {self.episode_id}: Step {self.episode_len} reward: {reward}, info: {info}')
+            if self.use_tf_log:
+                eval_dict = copy.deepcopy(info)
+                eval_info = eval_dict['eval_info']
+                dist_ee_to_handle = eval_dict['dist_ee_to_handle']
+                del eval_dict['eval_info'], eval_dict['dist_ee_to_handle']
+                eval_dict.update(eval_info)
+                eval_dict['dist_ee_to_handle1'] = dist_ee_to_handle[0]
+                eval_dict['dist_ee_to_handle2'] = dist_ee_to_handle[1]
+                self.tf_logger.log(eval_dict, n_iter=self.episode_len, eval=True)
 
         episode_done = done
         done = true_done(done, info)
@@ -199,12 +212,15 @@ class Evaluation:
 
         reset_pi()
         while self.episode_id < num:
+            start_time = time.time()
             obs = self.recent_obs
             if self.use_hidden_state:
                 obs = self.env.get_state()
             with torch.no_grad():
                 action = to_np(pi(unsqueeze(obs, axis=0), mode=self.sample_mode))[0]
             episode_done = self.step(action)
+            print(f"Step: {self.episode_len:03d}/200, step time: {(time.time() - start_time):02f}")
+            start_time = time.time()
             if episode_done:
                 reset_pi()
                 if self.use_log:
