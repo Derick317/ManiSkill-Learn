@@ -16,15 +16,19 @@ from mani_skill_learn.utils.torch import TensorboardLogger
 from .builder import EVALUATIONS
 
 
-def save_eval_statistics(folder, lengths, rewards, finishes, logger=None):
+def save_eval_statistics(folder, lengths, rewards, finishes, selected_ids=None, target_indexes=None, logger=None):
     if logger is not None:
         logger.info(f'Num of trails: {len(lengths):.2f}, '
                     f'Length: {np.mean(lengths):.2f}+/-{np.std(lengths):.2f}, '
                     f'Reward: {np.mean(rewards):.2f}+/-{np.std(rewards):.2f}, '
                     f'Success or Early Stop Rate: {np.mean(finishes):.2f}')
     if folder is not None:
-        table = [['length', 'reward', 'finish']]
-        table += [[number_to_str(__, 2) for __ in _] for _ in zip(lengths, rewards, finishes)]
+        if selected_ids is None or target_indexes is None:
+            table = [['length', 'reward', 'finish']]
+            table += [[number_to_str(__, 2) for __ in _] for _ in zip(lengths, rewards, finishes)]
+        else:
+            table = [['env_id', 'target', 'length', 'reward', 'finish']]
+            table += [[number_to_str(__, 2) for __ in _] for _ in zip(selected_ids, target_indexes, lengths, rewards, finishes)]
         dump(table, osp.join(folder, 'statistics.csv'))
 
 
@@ -55,6 +59,7 @@ class Evaluation:
         self.logger = flush_print
         self.episode_id = 0
         self.episode_lens, self.episode_rewards, self.episode_finishes = [], [], []
+        self.selected_ids, self.target_indexes = [], []
         self.episode_len, self.episode_reward, self.episode_finish = 0, 0, False
         self.recent_obs = None
         self.data_episode = None
@@ -92,6 +97,7 @@ class Evaluation:
                 self.tf_logger = TensorboardLogger(work_dir)
 
         self.episode_lens, self.episode_rewards, self.episode_finishes = [], [], []
+        self.selected_ids, self.target_indexes = [], []
         self.recent_obs = None
         self.data_episode = None
         self.video_writer = None
@@ -104,6 +110,8 @@ class Evaluation:
         self.episode_lens.append(self.episode_len)
         self.episode_rewards.append(self.episode_reward)
         self.episode_finishes.append(self.episode_finish)
+        self.selected_ids.append(self.env.selected_id)
+        self.target_indexes.append(self.env.target_index)
 
         if self.save_traj and self.data_episode is not None:
             group = self.h5_file.create_group(f'traj_{self.episode_id}')
@@ -130,7 +138,7 @@ class Evaluation:
             image = self.env.render(mode='rgb_array')
             image = image[..., ::-1]
             if self.video_writer is None:
-                self.video_file = osp.join(self.video_dir, f'{self.episode_id}.mp4')
+                self.video_file = osp.join(self.video_dir, f'episode_{self.episode_id}_env_{self.env.selected_id}_{self.env.target_index}.mp4')
                 self.video_writer = cv2.VideoWriter(self.video_file, cv2.VideoWriter_fourcc(*'mp4v'), 20,
                                                     (image.shape[1], image.shape[0]))
             self.video_writer.write(image)
@@ -212,15 +220,15 @@ class Evaluation:
 
         reset_pi()
         while self.episode_id < num:
-            start_time = time.time()
+            # start_time = time.time()
             obs = self.recent_obs
             if self.use_hidden_state:
                 obs = self.env.get_state()
             with torch.no_grad():
                 action = to_np(pi(unsqueeze(obs, axis=0), mode=self.sample_mode))[0]
             episode_done = self.step(action)
-            print(f"Step: {self.episode_len:03d}/200, step time: {(time.time() - start_time):02f}")
-            start_time = time.time()
+            # print(f"Step: {self.episode_len:03d}/200, step time: {(time.time() - start_time):02f}")
+            # start_time = time.time()
             if episode_done:
                 reset_pi()
                 if self.use_log:
@@ -230,7 +238,7 @@ class Evaluation:
                     print_info = dict_to_str(print_dict)
                     self.logger(f'{print_info}')
         self.finish()
-        return self.episode_lens, self.episode_rewards, self.episode_finishes
+        return self.episode_lens, self.episode_rewards, self.episode_finishes, self.selected_ids, self.target_indexes
 
     def close(self):
         if hasattr(self, 'env'):
@@ -303,6 +311,18 @@ class BatchEvaluation:
         for i in range(self.n):
             self.workers[i].get_attr('episode_finishes')
         return concat_list([self.workers[i].get() for i in range(self.n)])
+    
+    @property
+    def selected_ids(self):
+        for i in range(self.n):
+            self.workers[i].get_attr('selected_ids')
+        return concat_list([self.workers[i].get() for i in range(self.n)])
+
+    @property
+    def target_indexes(self):
+        for i in range(self.n):
+            self.workers[i].get_attr('target_indexes')
+        return concat_list([self.workers[i].get() for i in range(self.n)])
 
     def finish(self):
         for i in range(self.n):
@@ -338,7 +358,7 @@ class BatchEvaluation:
         if self.synchronize:
             num_finished = [0 for i in range(n)]
             if hasattr(pi, 'reset'):
-                self.pi.reset()
+                pi.reset(n)
             while True:
                 finish = True
                 for i in range(n):
@@ -355,6 +375,8 @@ class BatchEvaluation:
                     if num_finished[i] < running_steps[i]:
                         episode_done = self.workers[i].get()
                         num_finished[i] += int(episode_done)
+                        if hasattr(pi, 'reset'):
+                            pi.reset(n, i)
                         if i == 0 and int(episode_done) == 1 and self.use_log:
                             print_dict = {}
                             print_dict['memory'] = get_total_memory('G', False)
@@ -368,7 +390,7 @@ class BatchEvaluation:
         self.finish()
         if self.enable_merge:
             self.merge_results(n)
-        return self.episode_lens, self.episode_rewards, self.episode_finishes
+        return self.episode_lens, self.episode_rewards, self.episode_finishes, self.selected_ids, self.target_indexes
 
     def close(self):
         for worker in self.workers:

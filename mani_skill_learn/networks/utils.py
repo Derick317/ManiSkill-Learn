@@ -32,6 +32,10 @@ def get_kwargs_from_shape(obs_shape, action_shape):
                 obs_shape['pointcloud']['xyz'][-1] +
                 obs_shape['pointcloud']['rgb'][-1]
             )
+            replaceable_kwargs['pcd_xyz_seg_channel'] = (
+                obs_shape['pointcloud']['xyz'][-1] +
+                obs_shape['pointcloud']['seg'][-1]
+            )
         if 'rgbd' in obs_shape.keys():
             # For mani_skill point rgbd input
             mode = list(obs_shape['rgbd'].keys())[0]

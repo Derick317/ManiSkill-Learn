@@ -1,7 +1,7 @@
 import itertools
 from collections import defaultdict
 from copy import deepcopy
-import numpy as np
+import time, numpy as np
 
 from mani_skill_learn.utils.data import (to_np, concat_list_of_array, stack_dict_of_list_array, flatten_dict,
                              compress_size, unsqueeze, stack_list_of_array)
@@ -97,12 +97,24 @@ class Rollout:
             self.recent_obs = ob
             if episode_done:
                 self.reset()
+                if hasattr(pi, 'reset'):
+                    pi.reset()
             if i >= num and (episode_done or not whole_episode):
                 break
         ret = dict_of(obs, actions, next_obs, rewards, dones, episode_dones)
         ret = stack_dict_of_list_array(ret)
         infos = stack_dict_of_list_array(dict(infos))
         return ret, infos
+
+    def forward_n_episodes(self, pi=None, num=1):
+        rets, infos = [], []
+        for i in range(num):
+            if hasattr(pi, 'reset'):
+                assert self.worker_id is None, "Reset policy only works for single thread!"
+            ret, info = self.forward_with_policy(pi, whole_episode=True)
+            rets.append(ret)
+            infos.append(info)
+        return rets, infos
 
     def forward_single(self, action=None):
         """
@@ -236,6 +248,57 @@ class BatchRollout:
             Concat: [Process 0, Process1, ..., Process n]
             """
         return trajectories, infos
+
+    def forward_n_episodes(self, policy, num: int):
+        self.reset()
+        if self.synchronize:
+            """
+            When the we run with random actions, it is ok to use asynchronizedly
+            """
+            if policy is not None: device = policy.device
+            ret_traj, ret_info = [], []
+            while num > 0:
+                current_n = min(self.n, num)
+                num -= self.n
+                not_done = [i for i in range(current_n)]
+                trajectories = defaultdict(lambda: [[] for i in range(current_n)])
+                infos = defaultdict(lambda: [[] for i in range(current_n)])
+                self.reset()
+                if hasattr(policy, 'reset'): policy.reset(current_n)
+                while len(not_done):
+                    if policy is None:
+                        action = None
+                    else:
+                        import torch
+                        from mani_skill_learn.utils.data import to_torch
+                        # tmp_time = time.time()
+                        with torch.no_grad():
+                            recent_obs = to_torch(self.recent_obs, dtype='float32', device=device)
+                            action = to_np(policy(recent_obs))[:current_n]
+                        # policy_time = time.time() - tmp_time
+                        # tmp_time = time.time()
+                    for j in not_done:
+                        self.workers[j].call('forward_single', action=None if action is None else action[j])
+
+                    done_this_iter = []
+                    for j in not_done:
+                        traj, info = self.workers[j].get()
+                        for key in traj:
+                            trajectories[key][j].append(traj[key])
+                        for key in info:
+                            infos[key][j].append(info[key])
+                        if traj['episode_dones']:
+                            done_this_iter.append(j)
+                    for j in done_this_iter: not_done.remove(j)
+                    # step_time = time.time() - tmp_time
+                    # print("policy_time: ", policy_time)
+                    # print("step_time: ", step_time)
+                ret_traj += [{key: stack_list_of_array(trajectories[key][i]) for key in trajectories} for i in range(current_n)]
+                ret_info += [{key: stack_list_of_array(infos[key][i]) for key in infos} for i in range(current_n)]
+        else:
+            raise NotImplementedError
+
+        return ret_traj, ret_info
 
     def close(self):
         for worker in self.workers:

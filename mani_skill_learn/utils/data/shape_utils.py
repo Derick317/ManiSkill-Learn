@@ -62,6 +62,21 @@ def unsqueeze(x, axis=0):
             raise NotImplementedError()
 
 
+def squeeze(x):
+    if isinstance(x, np.ndarray):
+        return np.squeeze(x)
+    elif isinstance(x, dict):
+        return {key: squeeze(x[key]) for key in x}
+    elif isinstance(x, (list, tuple)):
+        return type(x)([squeeze(_) for _ in x])
+    else:
+        import torch
+        if isinstance(x, torch.Tensor):
+            return torch.squeeze(x)
+        else:
+            raise NotImplementedError()
+
+
 def reshape(x, target_shape):
     if isinstance(x, np.ndarray):
         return x.reshape(*target_shape)

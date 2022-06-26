@@ -85,6 +85,8 @@ class SapienRLWrapper(ObservationWrapper):
         ret = {}
         ret[self.obs_mode] = visual_data
         ret['state'] = state
+        if 'id' in observation:
+            ret['id'] = observation['id']
         return ret
 
     def get_obs(self):

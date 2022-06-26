@@ -3,12 +3,13 @@ import os.path as osp
 from random import shuffle
 
 import h5py
-import numpy as np
+import math, numpy as np
 
 from mani_skill_learn.utils.data import (dict_to_seq, recursive_init_dict_array, map_func_to_dict_array,
                                          store_dict_array_to_h5,
                                          sample_element_in_dict_array, assign_single_element_in_dict_array, is_seq_of)
 from mani_skill_learn.utils.fileio import load_h5s_as_list_dict_array, load, check_md5sum
+from mani_skill_learn.utils.math import split_num
 from .builder import REPLAYS
 
 
@@ -65,6 +66,19 @@ class ReplayMemory:
 
     def get_all(self):
         return sample_element_in_dict_array(self.memory, slice(0, len(self)))
+
+    def get_all_batch(self, batchsize, rand=True):
+        assert batchsize > 0
+        num_batch = len(self) // batchsize
+        _, len_batch = split_num(len(self), num_batch)
+        batch_idx = np.random.permutation(len(self)) if rand else np.arange(len(self))
+        samples = []
+        start = 0
+        for i in range(num_batch):
+            samples.append(sample_element_in_dict_array(self.memory, \
+                batch_idx[start: start + len_batch[i]]))
+            start += len_batch[i]
+        return samples
 
     def to_h5(self, file, with_traj_index=False):
         from h5py import File

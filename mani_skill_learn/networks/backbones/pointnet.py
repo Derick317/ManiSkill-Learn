@@ -87,6 +87,78 @@ class PointNetV0(PointBackbone):
         global_feature = global_feature.reshape(B, -1)
         return self.global_mlp(global_feature)
 
+# Adapted by Deming Chen
+# Also output the output of the first the convolutional layer
+@BACKBONES.register_module()
+class PointNetV1(PointBackbone):
+    def __init__(self, conv_cfg, mlp_cfg, output_layer=1, stack_frame=1, subtract_mean_coords=False, max_mean_mix_aggregation=False):
+        """
+        PointNet that processes multiple consecutive frames of pcd data.
+        :param conv_cfg: configuration for building point feature extractor
+        :param mlp_cfg: configuration for building global feature extractor
+        :param output_layer: layer of conv_mlp for output
+        :param stack_frame: num of stacked frames in the input
+        :param subtract_mean_coords: subtract_mean_coords trick 
+            subtract the mean of xyz from each point's xyz, and then concat the mean to the original xyz;
+            we found concatenating the mean pretty crucial
+        :param max_mean_mix_aggregation: max_mean_mix_aggregation trick
+        """
+        super(PointNetV1, self).__init__()
+        conv_cfg = conv_cfg.deepcopy()
+        conv_cfg.mlp_spec[0] += int(subtract_mean_coords) * 3
+        conv1_cfg = conv_cfg.deepcopy()
+        conv2_cfg = conv_cfg.deepcopy()
+        assert output_layer <= len(conv_cfg.mlp_spec)
+        conv1_cfg.mlp_spec = conv1_cfg.mlp_spec[:(output_layer + 1)]
+        conv2_cfg.mlp_spec = conv2_cfg.mlp_spec[output_layer:]
+        self.conv_mlp1 = build_backbone(conv1_cfg)
+        self.conv_mlp2 = build_backbone(conv2_cfg)
+        self.stack_frame = stack_frame
+        self.max_mean_mix_aggregation = max_mean_mix_aggregation
+        self.subtract_mean_coords = subtract_mean_coords
+        self.global_mlp = build_backbone(mlp_cfg)
+
+    def forward(self, pcd, state, mask=None):
+        """
+        :param pcd: point cloud
+                xyz: shape (l, n_points, 3)
+                rgb: shape (l, n_points, 3)
+                seg: shape (l, n_points, n_seg) (unused in this function)
+        :param state: shape (l, state_shape) agent state and other information of robot
+        :param mask: [B, N] ([batch size, n_points]) provides which part of point cloud should be considered
+        :return: [B, F] ([batch size, final output dim])
+        """
+        if isinstance(pcd, dict):
+            pcd = pcd.copy()
+            mask = torch.ones_like(pcd['xyz'][..., :1]) if mask is None else mask[..., None]  # [B, N, 1]
+            if self.subtract_mean_coords:
+                # Use xyz - mean xyz instead of original xyz
+                xyz = pcd['xyz']  # [B, N, 3]
+                mean_xyz = masked_average(xyz, 1, mask=mask, keepdim=True)  # [B, 1, 3]
+                pcd['mean_xyz'] = mean_xyz.repeat(1, xyz.shape[1], 1)
+                pcd['xyz'] = xyz - mean_xyz
+            # Concat all elements like xyz, rgb, seg mask, mean_xyz
+            pcd = torch.cat(dict_to_seq(pcd)[1], dim=-1)
+        else:
+            mask = torch.ones_like(pcd[..., :1]) if mask is None else mask[..., None]  # [B, N, 1]
+
+        B, N = pcd.shape[:2]
+        state = torch.cat([pcd, state[:, None].repeat(1, N, 1)], dim=-1)  # [B, N, CS]
+        point_feature_temp = self.conv_mlp1(state.transpose(2, 1)).transpose(2, 1)  # [B, N, CF]
+        point_feature = self.conv_mlp2(point_feature_temp.transpose(2, 1)).transpose(2, 1)  # [B, N, CF]
+        # [B, K, N / K, CF]
+        point_feature = point_feature.view(B, self.stack_frame, N // self.stack_frame, point_feature.shape[-1])
+        mask = mask.view(B, self.stack_frame, N // self.stack_frame, 1)  # [B, K, N / K, 1]
+        if self.max_mean_mix_aggregation:
+            sep = point_feature.shape[-1] // 2
+            max_feature = masked_max(point_feature[..., :sep], 2, mask=mask)  # [B, K, CF / 2]
+            mean_feature = masked_average(point_feature[..., sep:], 2, mask=mask)  # [B, K, CF / 2]
+            global_feature = torch.cat([max_feature, mean_feature], dim=-1)  # [B, K, CF]
+        else:
+            global_feature = masked_max(point_feature, 2, mask=mask)  # [B, K, CF]
+        global_feature = global_feature.reshape(B, -1)
+        return self.global_mlp(global_feature), point_feature_temp
+
 
 @BACKBONES.register_module()
 class PointNetWithInstanceInfoV0(PointBackbone):

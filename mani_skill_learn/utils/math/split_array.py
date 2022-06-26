@@ -1,7 +1,9 @@
-
 def split_num(num, n):
     """
-    Divide num into m=min(n, num) elements x_1, ...., x_n, where x_1, ..., x_n >= 1 and max_{i,j} |x_i - x_j| <= 1
+    Divide num into m = min(n, num) elements x_1, ...., x_n, where x_1, ..., x_n >= 1 and max_{i,j} |x_i - x_j| <= 1
+    Return: 
+        n
+        splits: list of lenth n
     """
     n = min(num, n)
     min_steps = num // n

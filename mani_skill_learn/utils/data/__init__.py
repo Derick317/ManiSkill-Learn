@@ -8,7 +8,7 @@ from .dict_array import (recursive_init_dict_array, map_func_to_dict_array, samp
 from .dict_utils import update_dict, update_dict_with_begin_keys
 from .filtering import custom_filter, filter_none, filter_with_regex
 from .flatten import flatten_dict
-from .shape_utils import get_shape, get_one_shape, get_shape_and_type, unsqueeze
+from .shape_utils import get_shape, get_one_shape, get_shape_and_type, unsqueeze, squeeze
 from .string_utils import custom_format, regex_match, prefix_match, h5_name_format, h5_name_deformat
 from .type import (get_str_dtype, str_to_dtype, is_str, is_num, is_type, is_arr, is_seq_of, is_list_of, is_tuple_of,
                    is_dict)
@@ -16,3 +16,4 @@ from .wrapper import check_consistent, apply_func, change_dtype, process_input, 
 from .padding import pad_or_clip
 from .shuffle import random_shuffle
 from .list_utils import auto_pad_lists
+from .arithmetic import compare_dict_array, add_dict_array

@@ -11,8 +11,8 @@ env_cfg = dict(
 agent = dict(
     type='PurePlanning',
     policy_cfg=dict(
-        horizon=8,
-        num_action_sequences=40,
+        horizon=5,
+        num_action_sequences=20,
         num_procs=10,
         sample_strategy='mppi', # only 'mppi', 'cem' and 'random' for now
         cem_cfg=dict(
@@ -21,8 +21,8 @@ agent = dict(
             cem_alpha=1.0
         ),
         mppi_cfg=dict(
-            mppi_gamma=10,
-            mppi_beta=0.6,
+            mppi_gamma=4,
+            mppi_beta=0.3,
             sample_velocity=True,
             mag_noise=0.9,
         ),
