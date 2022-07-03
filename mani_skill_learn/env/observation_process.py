@@ -54,10 +54,20 @@ def process_mani_skill_base(obs, env=None):
             chosen_xyz.append(xyz[shuffle_indices])
         sample_background_pts = tot_pts - chosen_mask_pts
 
+        # if seg.shape[1] == 1:
+        #     bk_seg = np.logical_not(seg[:, 0])
+        # else:
+        #     bk_seg = np.logical_not(np.logical_or(*([seg[:, i] for i in range(seg.shape[1])])))
         if seg.shape[1] == 1:
             bk_seg = np.logical_not(seg[:, 0])
         else:
-            bk_seg = np.logical_not(np.logical_or(*([seg[:, i] for i in range(seg.shape[1])])))
+            for i in range(seg.shape[1] - 1):
+                if i == 0:
+                    bk = np.logical_or(seg[:, 0], seg[:, 1])
+                    continue
+                bk = np.logical_or(bk, seg[:, i + 1])
+            bk_seg = np.logical_not(bk)
+        
         bk_seg = np.where(bk_seg)[0]
         shuffle_indices = np.random.permutation(bk_seg)[:sample_background_pts]
 

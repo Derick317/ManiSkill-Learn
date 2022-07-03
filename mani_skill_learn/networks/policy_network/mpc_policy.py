@@ -1,6 +1,8 @@
+from mani_skill_learn.utils.torch.module_utils import CustomDataParallel
 from ..builder import POLICYNETWORKS
 from mani_skill_learn.utils.data import to_torch, to_np, squeeze
 from mani_skill_learn.utils.data.concat import stack_list_of_array as stack
+from mani_skill_learn.networks.model_network import PointNetModel
 import copy, numpy as np
 import torch
 
@@ -19,6 +21,7 @@ class MPCPolicy():
                  noise_std=0.1,
                  num_ensemble=1,
                  model=None,
+                 evaluator=None,
                  sample_strategy='random'
                  ):
 
@@ -28,6 +31,7 @@ class MPCPolicy():
         self.noise_std = noise_std
         self.num_ensemble = num_ensemble
         self.model = model
+        self.evaluator = evaluator
 
         # action space
         self.ac_dim = ac_dim
@@ -59,12 +63,12 @@ class MPCPolicy():
     
     @property
     def device(self):
-        if self.model is not None:
+        if isinstance(self.model, PointNetModel) or isinstance(self.model, CustomDataParallel):
             return self.model.device
         else:
             raise NotImplementedError
 
-    def reset(self, num_procs=1, which=-1):
+    def reset(self, num_procs=1, which=-1, **reset_kwargs):
         if self.sample_strategy == 'mppi':
             if self.mppi_mean is None or num_procs != self.mppi_mean.shape[0] or which == -1:
                 self.mppi_mean = np.tile((self.high + self.low) / 2, (num_procs, self.horizon, 1))
@@ -220,7 +224,9 @@ class MPCPolicy():
 
         if self.model is not None:
             sum_of_rewards = self.model_forward(obs, candidate_action_sequences)
-        else: 
+        elif self.evaluator is not None:
+            sum_of_rewards = self.evaluator.run(obs, candidate_action_sequences)
+        else:
             raise NotImplementedError
         return sum_of_rewards
 
@@ -238,21 +244,52 @@ class MPCPolicy():
         """
         assert len(ac_seq.shape) == 4, "Action sequences need to be of shape (M, N, H, ac_dim)!"
         obs = stack([obs] * ac_seq.shape[1], axis=1) # Shape: (M, N, xxx)
-        obs = to_torch(obs, dtype='float32', device=self.device, non_blocking=True)
-        if self.model.add_ori: ids = obs.pop("id") # Shape of ids: (M, N, 2)
-        ac_seq = to_torch(ac_seq, dtype='float32', device=self.device, non_blocking=True)
-        with torch.no_grad():
+
+        if isinstance(self.model, PointNetModel) or isinstance(self.model, CustomDataParallel):
+            if hasattr(self.model, "update_norm"):
+                ds_std = self.model.ds_std
+                ds_mean = self.model.ds_mean
+                reward_std = self.model.reward_std
+                reward_mean = self.model.reward_mean
+                add_ori = self.model.add_ori
+            else:
+                ds_std = self.model.module.ds_std
+                ds_mean = self.model.module.ds_mean
+                reward_std = self.model.module.reward_std
+                reward_mean = self.model.module.reward_mean
+                add_ori = self.model.module.add_ori
+
+            obs = to_torch(obs, dtype='float32', device=self.device, non_blocking=True)
+            if add_ori: ids = obs.pop("id") # Shape of ids: (M, N, 2)
+            ac_seq = to_torch(ac_seq, dtype='float32', device=self.device, non_blocking=True)
+
+            with torch.no_grad():
+                total_reward = 0
+                for i in range(self.num_ensemble):
+                    obs_this_ensemble = copy.deepcopy(obs)
+                    reward_this_ensemble = 0
+                    for t in range(ac_seq.shape[2]):
+                        output = self.model(obs_this_ensemble, ac_seq[..., t, :], ids, i)
+                        obs_this_ensemble['pointcloud']['xyz'] += output['dp']
+                        obs_this_ensemble['state'] += output['ds'] * ds_std + ds_mean
+                        reward_this_ensemble += output['rewards'] * reward_std + reward_mean
+                    total_reward += reward_this_ensemble
+            return to_np(total_reward / self.num_ensemble, dtype='float32')
+
+        elif isinstance(self.model, list): # model is a list of workers
+            assert len(self.model) == self.num_ensemble
+            for i in range(self.num_ensemble):
+                self.model[i].call('forward', obs, ac_seq)
             total_reward = 0
             for i in range(self.num_ensemble):
-                obs_this_ensemble = copy.deepcopy(obs)
-                reward_this_ensemble = 0
-                for t in range(ac_seq.shape[2]):
-                    output = self.model(obs_this_ensemble, ac_seq[..., t, :], ids, i)
-                    obs_this_ensemble['pointcloud']['xyz'] += output['dp']
-                    obs_this_ensemble['state'] += output['ds'] * self.model.ds_std + self.model.ds_mean
-                    reward_this_ensemble += output['rewards'] * self.model.reward_std + self.model.reward_mean
-                total_reward += reward_this_ensemble
-        return to_np(total_reward / self.num_ensemble, dtype='float32')
+                total_reward += self.model[i].get() # np.ndarray
+            return total_reward / self.num_ensemble
+
+        else:
+            raise NotImplementedError
 
     def update_norm(self, reward_mean, reward_std, ds_mean, ds_std):
-        self.model.update_norm(reward_mean, reward_std, ds_mean, ds_std)
+        if hasattr(self.model, "update_norm"):
+            self.model.update_norm(reward_mean, reward_std, ds_mean, ds_std)
+        else:
+            self.model.module.update_norm(reward_mean, reward_std, ds_mean, ds_std)

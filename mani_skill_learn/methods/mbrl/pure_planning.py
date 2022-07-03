@@ -11,7 +11,6 @@ class PurePlanning():
         self.obs_shape = obs_shape
         self.action_shape = action_shape
         self.action_space = action_space
-        self.policy = MPCPolicy(ac_dim=action_shape, ac_space=action_space, **policy_cfg)
 
         # Parallel or not?
         if num_procs > 1:
@@ -19,8 +18,9 @@ class PurePlanning():
         else:
             self.evaluator = Evaluator(env_cfg)
         
-        # Set forward function
-        self.policy.set_forward(self.evaluator.run)
+        self.policy = MPCPolicy(ac_dim=action_shape, ac_space=action_space,
+                                evaluator=self.evaluator, **policy_cfg)
+        self.policy.reset()
 
     def eval(self):
         pass
@@ -29,7 +29,7 @@ class PurePlanning():
         pass
 
     def __call__(self, obs, num_actions=1, mode=None):
-        return self.policy(obs)
+        return self.policy(obs, num_actions, mode)
 
 
 
@@ -46,7 +46,8 @@ class Evaluator():
         """
         :param init_obs: numpy array with the initial observation of a sequence. Shape [D_obs]
         :param candidate_action_sequences: numpy array with the candidate action
-        sequences. Shape [B, H, D_action] where
+        sequences. Shape [B, H, D_action] or [M, B, H, D_action] where
+            - M = 1
             - B is the number of action sequences considered
             - H is the horizon
             - D_action is the action of the dimension
@@ -65,6 +66,14 @@ class Evaluator():
         #       in batch, which can be much faster than looping through each
         #       action sequence.
         #
+        M = 0
+        if len(init_obs.shape) == 2 or len(candidate_action_sequences.shape) == 4:
+            assert len(init_obs.shape) == 2 and len(candidate_action_sequences.shape) == 4
+            assert init_obs.shape[0] == candidate_action_sequences.shape[0] == 1
+            init_obs = init_obs[0]
+            M, N, H, ac_dim = candidate_action_sequences.shape
+            candidate_action_sequences = candidate_action_sequences.reshape(N, H, ac_dim)
+
         sum_of_rewards = np.zeros(candidate_action_sequences.shape[0])
         for i in range(candidate_action_sequences.shape[0]):
             self.env.set_state(init_obs)
@@ -75,7 +84,8 @@ class Evaluator():
                     break
             self.env.change_step_in_ep(0)
         self.env.reset()
-        return sum_of_rewards
+
+        return sum_of_rewards.reshape(M, N) if M > 0 else sum_of_rewards
 
 class BatchEvaluator():
     def __init__(self, env_cfg, num_procs=1):
@@ -98,6 +108,14 @@ class BatchEvaluator():
         :return: numpy array with the sum of rewards for each action sequence.
         The array should have shape [N].
         """
+        M = 0
+        if len(init_obs.shape) == 2 or len(candidate_action_sequences.shape) == 4:
+            assert len(init_obs.shape) == 2 and len(candidate_action_sequences.shape) == 4
+            assert init_obs.shape[0] == candidate_action_sequences.shape[0] == 1
+            init_obs = init_obs[0]
+            M, N, H, ac_dim = candidate_action_sequences.shape
+            candidate_action_sequences = candidate_action_sequences.reshape(N, H, ac_dim)
+
         N = candidate_action_sequences.shape[0]
         batchsize = math.ceil(N / self.num_procs)
         sum_of_rewards = []
@@ -107,4 +125,6 @@ class BatchEvaluator():
         for i in range(self.num_procs):
             sum_of_rewards.append(self.workers[i].get())
         
+        if M > 0:
+            return np.concatenate(sum_of_rewards, axis=0).reshape(M, N)
         return np.concatenate(sum_of_rewards, axis=0)

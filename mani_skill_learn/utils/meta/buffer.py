@@ -1,23 +1,14 @@
 import numpy as np
 
-def traj_to_dataset(trajectories, del_rgb = False):
+def traj_to_dataset(trajectories, del_rgb=False):
     dataset = dict()
     dataset['obs'] = trajectories['obs']
     dataset['actions'] = trajectories['actions']
-    re = trajectories['rewards']
-    dataset['rewards_unnorm'] = re
-    dataset['rewards'] = (re - np.mean(re, axis=0)) / (np.std(re, axis=0) + 1e-8)
+    dataset['rewards'] = trajectories['rewards']
     dataset['next_obs'] = trajectories['next_obs']
-    if isinstance(dataset['next_obs'], dict):
-        # obs_mode='pointcloud'
-        dataset['next_pcd'] = dataset['next_obs'].pop('pointcloud')
-        next_s = trajectories['next_obs']['state']
-        dataset['ds'] = (next_s - np.mean(next_s, axis=0)) / (np.std(next_s, axis=0) + 1e-8)
-        if del_rgb:
-            del dataset['obs']['pointcloud']['rgb']
-            del dataset['next_pcd']['rgb']
-    else: # obs_mode='state'
-        raise NotImplementedError
+    if isinstance(dataset['next_obs'], dict) and del_rgb:
+        del dataset['obs']['pointcloud']['rgb']
+        del dataset['next_obs']['pointcloud']['rgb']
 
     return dataset
 

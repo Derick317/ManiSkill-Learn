@@ -5,7 +5,7 @@ stack_frame = 1
 env_cfg = dict(
     type='gym',
     unwrapped=False,
-    env_name="OpenCabinetDoor_Split_Train-v0",
+    env_name="OpenCabinetDoor-v0",
     max_episode_steps=200,
     obs_mode='pointcloud',
     reward_type='dense',
@@ -13,17 +13,17 @@ env_cfg = dict(
 )
 
 agent = dict(
-    type='REPLAN',
+    type='REPLANV2',
     del_rgb=True,
-    batchsize=256,
+    batchsize=128,
     add_ori=True,
     num_ensemble=3,
-    nEpoch=25, # 40
+    nEpoch=24, # 40
     loss_coeff = {'rewards': 1, 'ds': 1, 'chamfer': 100},
     policy_cfg=dict(
-        horizon=5,
-        num_action_sequences=25,
-        noise_std=0.1,
+        horizon=7,
+        num_action_sequences=125,
+        noise_std=0.04,
         sample_strategy='mppi', # only 'mppi', 'cem' and 'random' for now
         cem_cfg=dict(
             cem_iterations=4,
@@ -32,7 +32,7 @@ agent = dict(
         ),
         mppi_cfg=dict(
             mppi_gamma=4,
-            mppi_beta=0.3,
+            mppi_beta=0.7,
             sample_velocity=True,
             mag_noise=0.9,
         ),
@@ -49,7 +49,7 @@ agent = dict(
         optim_cfg=dict(
             type='Adam', 
             lr=5e-4, 
-            weight_decay=1e-5
+            weight_decay=5e-6
         ),
         nn_cfg=dict(
             pointnet_cfg=dict(
@@ -57,7 +57,7 @@ agent = dict(
                 stack_frame = stack_frame,
                 conv_cfg=dict(
                     type="ConvMLP",
-                    mlp_spec=['agent_shape + action_shape + pcd_xyz_seg_channel', 128, 512],
+                    mlp_spec=['agent_shape + action_shape + pcd_xyz_seg_channel', 128, 256, 1024],
                     inactivated_output=False,
                     conv_init_cfg=dict(
                         type='xavier_init',
@@ -72,7 +72,7 @@ agent = dict(
             ),
             feat_flow_cfg=dict(
                 type="ConvMLP",
-                mlp_spec=['128 + 512', 128, 3],
+                mlp_spec=['128 + 1024', 256, 3],
                 conv_init_cfg=dict(
                     type='xavier_init',
                     gain=1,
@@ -82,7 +82,7 @@ agent = dict(
             reward_state_cfg=dict(
                 type='LinearMLP',
                 norm_cfg=None,
-                mlp_spec=['512', 128, 'agent_shape + 1'],
+                mlp_spec=['1024', 256, 'agent_shape + 1'],
                 linear_init_cfg=dict(
                     type='xavier_init',
                     gain=1,
@@ -94,12 +94,13 @@ agent = dict(
 )
 
 train_mbrl_cfg=dict(
-    n_traj_onPol=25,
-    n_traj_rand=5,
+    n_traj_onPol=24,
+    n_traj_rand=3,
     total_steps=2500000,
     warm_steps=4000,
-    n_eval=100000,
-    n_checkpoint=100000,
+    n_eval=50000,
+    n_checkpoint=25000,
+    reset_hp=True,
     on_policy=False
 )
 
@@ -108,30 +109,29 @@ rollout_cfg = dict(
     with_info=False,
     use_cost=False,
     reward_only=False,
-    num_procs=5,
+    num_procs=3,
 )
 
 eval_cfg = dict(
     type='Evaluation',
-    num=72,
-    num_procs=4,
+    num=5,
+    num_procs=1,
     use_hidden_state=False, # Use hidden state is only for CEM ground-truth model evaluation
     start_state=None,
     enable_merge=False,
     save_traj=True,
     save_log=False,
-    use_tf_log=True,
+    use_tf_log=False,
     save_video=True,
-    use_log=True,
+    use_log=False,
     log_every_step=False,
     env_cfg = dict(
         type='gym',
         unwrapped=False,
-        env_name="OpenCabinetDoor_Split_Val-v0",
+        env_name="OpenCabinetDoor-v0",
         max_episode_steps=200,
         obs_mode='pointcloud',
         reward_type='dense',
-        iter_all_cabinet=True,
         id_in_obs=True
     )
 )
@@ -143,7 +143,7 @@ replay_train_rand_cfg=dict(
 
 replay_train_onPol_cfg=dict(
     type='ReplayMemory',
-    capacity=800000,
+    capacity=600000,
 )
 
 replay_val_rand_cfg=dict(

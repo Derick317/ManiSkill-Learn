@@ -10,7 +10,7 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "32"
 os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 from mani_skill_learn.env import save_eval_statistics, Evaluation
 from mani_skill_learn.utils.meta import Config, DictAction, set_random_seed, collect_env, get_logger
@@ -125,8 +125,8 @@ def main_mfrl_brl(cfg, args, rollout, evaluator, logger):
         eval_dir = osp.join(cfg.work_dir, test_name)
         shutil.rmtree(eval_dir, ignore_errors=True)
         agent.eval()
-        lens, rewards, finishes = evaluator.run(agent, work_dir=eval_dir, **cfg.eval_cfg)
-        save_eval_statistics(eval_dir, lens, rewards, finishes, logger)
+        lens, rewards, finishes, selected_id, target_indexes = evaluator.run(agent, work_dir=eval_dir, **cfg.eval_cfg)
+        save_eval_statistics(eval_dir, lens, rewards, finishes, selected_id, target_indexes, logger)
         agent.train()
 
 

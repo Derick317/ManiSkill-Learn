@@ -7,15 +7,16 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
+import csv, numpy as np
 
 from mani_skill_learn.env import ReplayMemory
 from mani_skill_learn.env import save_eval_statistics
 from mani_skill_learn.utils.data import dict_to_str, get_shape, is_seq_of, to_np
-from mani_skill_learn.utils.meta import get_logger, get_total_memory, td_format
+from mani_skill_learn.utils.meta import get_logger, get_total_memory, td_format, Config
 from mani_skill_learn.utils.torch import TensorboardLogger, save_checkpoint
 from mani_skill_learn.utils.math import split_num
 from mani_skill_learn.utils.meta import traj_to_dataset, get_statistics
+from mani_skill_learn.methods.mbrl import REPLANV2, REPLAN
 
 class EpisodicStatistics:
     def __init__(self, num_procs):
@@ -80,9 +81,11 @@ class EveryNSteps:
     def standard(self, x):
         return int(x // self.interval) * self.interval
 
-def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_dir, total_steps=1000000, warm_steps=10000,
-             n_traj_onPol=1, n_traj_rand=1, n_updates=1, n_checkpoint=None, n_eval=None, init_replay_buffers=None,
-             init_replay_with_split=None, eval_cfg=None, replicate_init_buffer=1, num_trajs_per_demo_file=-1):
+def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_dir, 
+             total_steps=1000000, warm_steps=10000, n_traj_onPol=1, n_traj_rand=1, 
+             n_updates=1, n_checkpoint=None, n_eval=None, init_replay_buffers=None,
+             init_replay_with_split=None, eval_cfg=None, reset_hp=False,
+             replicate_init_buffer=1, num_trajs_per_demo_file=-1):
     logger = get_logger(env_cfg.env_name)
 
     import torch
@@ -139,7 +142,7 @@ def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_
         assert not on_policy
         assert rollout is not None
         # valOnPol and valRand
-        trajectories = rollout.forward_with_policy(None, warm_steps)[0]
+        trajectories = rollout.forward_with_policy(None, warm_steps // 2)[0]
         episode_statistics.push(trajectories['rewards'], trajectories['episode_dones'])
         dataset = traj_to_dataset(trajectories, del_rgb=agent.del_rgb)
         buffers["valOnPol"].push_batch(**dataset)
@@ -153,7 +156,7 @@ def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_
         buffers["trainOnPol"].push_batch(**dataset)
         rollout.reset()
         episode_statistics.reset_current()
-        steps = warm_steps * 2
+        steps = warm_steps * 3 // 2
         check_eval.check(steps)
         check_checkpoint.check(steps)
         check_tf_log.check(steps)
@@ -162,7 +165,40 @@ def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_
     total_updates = 0
     begin_time = datetime.now()
     max_ETA_len = None
+    header = ('iter', 'epoch', 'train_ds', 'train_chamfer',	'train_rewards', 'train_total', 
+              'valOnPol_ds', 'valOnPol_chamfer', 'valOnPol_rewards', 'valOnPol_total', 
+              'valRand_ds', 'valRand_chamfer', 'valRand_rewards', 'valRand_total')
+    with open(work_dir + "/loss_statistics.csv", 'w', encoding='utf-8', newline='') as f:  
+        write = csv.writer(f)
+        write.writerow(header)
+
     for iteration_id in itertools.count(1):
+        if reset_hp:
+            try:
+                args = Config.fromfile("configs/update_hyperparameter.py")
+                if 'num_action_sequences' in args and agent.policy.N != args.num_action_sequences:
+                    agent.policy.N = args.num_action_sequences
+                    logger.info(f"\"Num_action_sequences\" of the policy changes to {agent.policy.N}.")
+                if 'horizon' in args and agent.policy.horizon != args.horizon:
+                    agent.policy.horizon = args.horizon
+                    logger.info(f"\"Horizon\" of the policy changes to {agent.policy.horizon}.")
+                if 'mppi_beta' in args and agent.policy.mppi_beta != args.mppi_beta:
+                    agent.policy.mppi_beta = args.mppi_beta
+                    logger.info(f"\"Beta\" of the policy changes to {agent.policy.mppi_beta}.")
+                if 'n_traj_onPol' in args and n_traj_onPol != args.n_traj_onPol:
+                    n_traj_onPol = args.n_traj_onPol
+                    logger.info(f"\"n_traj_onPol\" changes to {n_traj_onPol}.")
+                if 'n_traj_rand' in args and n_traj_rand != args.n_traj_rand:
+                    n_traj_rand = args.n_traj_rand
+                    logger.info(f"\"n_traj_rand\" changes to {n_traj_rand}.")
+                if 'nEpoch' in args and agent.nEpoch != args.nEpoch:
+                    if isinstance(agent, REPLANV2):
+                        agent.change_nEpoch(args.nEpoch)
+                    else: agent.nEpoch = args.nEpoch
+                    logger.info(f"\"nEpoch\" of the agent changes to {agent.nEpoch}.")
+            except Exception as e:
+                print(e)
+
         tf_logs.reset()
         if rollout:
             episode_statistics.reset_history()
@@ -182,11 +218,9 @@ def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_
         Train the model
         """
         tmp_time = time.time()
-        # Before training, update means and stds of models
-        ds_mean, ds_std, re_mean, re_std = get_statistics([buffers['trainRand'], buffers['trainOnPol']])
-        agent.update_norm(re_mean, re_std, ds_mean, ds_std)
 
         # Start to train
+        # print("Start training the model ...", end='')
         train_loss, valOnPol_loss, valRand_loss = agent.train_model(buffers)
         for key in train_loss[-1][1]:
             model_dict['train_' + key] = float(to_np(train_loss[-1][1][key]))
@@ -194,11 +228,25 @@ def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_
             model_dict['valOnPol_' + key] = float(to_np(valOnPol_loss[-1][1][key]))
         for key in valRand_loss[-1][1]:
             model_dict['valRand_' + key] = float(to_np(valRand_loss[-1][1][key]))
-        update_time += time.time() - tmp_time
+
+        start_epoch, end_epoch = train_loss[0][0], train_loss[-1][0]
+        writelist = []
+        for j in range(end_epoch - start_epoch + 1):
+            writelist.append([iteration_id, j + start_epoch, train_loss[j][1]['ds'], train_loss[j][1]['next_pcd'],
+                train_loss[j][1]['rewards'], train_loss[j][1]['total'], valOnPol_loss[j][1]['ds'],
+                valOnPol_loss[j][1]['next_pcd'], valOnPol_loss[j][1]['rewards'], valOnPol_loss[j][1]['total'],
+                valRand_loss[j][1]['ds'], valRand_loss[j][1]['next_pcd'], valRand_loss[j][1]['rewards'], 
+                valRand_loss[j][1]['total']])
+        with open(work_dir + "/loss_statistics.csv", 'a', encoding='utf-8', newline='') as f:
+            write = csv.writer(f)
+            for j in range(end_epoch - start_epoch + 1):
+                write.writerow(writelist[j])
+        update_time = time.time() - tmp_time
 
         """
         Perform rollouts
         """
+        print("Start performing rollouts ...", end='\r')
         if n_traj_onPol > 0:
             # For online RL
             cnt_episodes = 0
@@ -284,9 +332,14 @@ def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_
             standardized_ckpt_step = check_checkpoint.standard(steps)
             model_path = osp.join(checkpoint_dir, f'model_{standardized_ckpt_step}.ckpt')
             logger.info(f'Save model at step: {steps}.The model will be saved at {model_path}')
-            agent.to_normal()
-            save_checkpoint(agent, model_path)
-            agent.recover_data_parallel()
+            if isinstance(agent, REPLAN):
+                agent.to_normal()
+                save_checkpoint(agent, model_path)
+                agent.recover_data_parallel()
+            elif isinstance(agent, REPLANV2):
+                agent.save_checkpoint(model_path)
+            else:
+                raise NotImplementedError
         if check_eval.check(steps):
             standardized_eval_step = check_eval.standard(steps)
             logger.info(f'Begin to evaluate at step: {steps}. '
@@ -310,5 +363,10 @@ def train_rl(agent, rollout, evaluator, env_cfg, buffers: dict, on_policy, work_
             break
     if n_checkpoint:
         print(f'Save checkpoint at final step {total_steps}')
-        agent.to_normal()
-        save_checkpoint(agent, osp.join(checkpoint_dir, f'model_{total_steps}.ckpt'))
+        if isinstance(agent, REPLAN):
+            agent.to_normal()
+            save_checkpoint(agent, osp.join(checkpoint_dir, f'model_{total_steps}.ckpt'))
+        elif isinstance(agent, REPLANV2):
+            agent.save_checkpoint(osp.join(checkpoint_dir, f'model_{total_steps}.ckpt'))
+        else:
+            raise NotImplementedError

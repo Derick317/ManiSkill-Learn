@@ -10,10 +10,10 @@ env_cfg = dict(
 
 agent = dict(
     type='PurePlanning',
+    num_procs=10,
     policy_cfg=dict(
         horizon=5,
-        num_action_sequences=20,
-        num_procs=10,
+        num_action_sequences=25,
         sample_strategy='mppi', # only 'mppi', 'cem' and 'random' for now
         cem_cfg=dict(
             cem_iterations=4,

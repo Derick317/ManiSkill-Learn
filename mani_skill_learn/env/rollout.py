@@ -255,7 +255,7 @@ class BatchRollout:
             """
             When the we run with random actions, it is ok to use asynchronizedly
             """
-            if policy is not None: device = policy.device
+            # if policy is not None: device = policy.device
             ret_traj, ret_info = [], []
             while num > 0:
                 current_n = min(self.n, num)
@@ -264,7 +264,7 @@ class BatchRollout:
                 trajectories = defaultdict(lambda: [[] for i in range(current_n)])
                 infos = defaultdict(lambda: [[] for i in range(current_n)])
                 self.reset()
-                if hasattr(policy, 'reset'): policy.reset(current_n)
+                if hasattr(policy, 'reset'): policy.reset(self.n)
                 while len(not_done):
                     if policy is None:
                         action = None
@@ -273,7 +273,8 @@ class BatchRollout:
                         from mani_skill_learn.utils.data import to_torch
                         # tmp_time = time.time()
                         with torch.no_grad():
-                            recent_obs = to_torch(self.recent_obs, dtype='float32', device=device)
+                            # recent_obs = to_torch(self.recent_obs, dtype='float32', device=device)
+                            recent_obs = self.recent_obs
                             action = to_np(policy(recent_obs))[:current_n]
                         # policy_time = time.time() - tmp_time
                         # tmp_time = time.time()

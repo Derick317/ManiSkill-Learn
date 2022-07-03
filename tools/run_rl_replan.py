@@ -10,7 +10,7 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "32"
 os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3, 4, 5"
 
 from mani_skill_learn.env import save_eval_statistics, Evaluation
 from mani_skill_learn.utils.meta import Config, DictAction, set_random_seed, collect_env, get_logger
@@ -89,7 +89,7 @@ def main_mfrl_brl(cfg, args, rollout, evaluator, logger):
         agent = build_brl(cfg.agent)
     elif cfg.agent.type in MBRL:
         agent_cfg = cfg.agent
-        if cfg.agent.type != "REPLAN":
+        if cfg.agent.type[:6] != "REPLAN":
             agent_cfg['env_cfg'] = deepcopy(cfg.env_cfg)
         agent = build_mbrl(cfg.agent)
         if cfg.agent.type == 'PurePlanning':
@@ -99,7 +99,10 @@ def main_mfrl_brl(cfg, args, rollout, evaluator, logger):
         raise NotImplementedError("")
 
     if cfg.get('resume_from', None) is not None:
-        load_checkpoint(agent, cfg.resume_from, map_location='cpu')
+        if cfg.agent.type == "REPLANV2":
+            agent.load_checkpoint(cfg.resume_from)
+        else:
+            load_checkpoint(agent, cfg.resume_from, map_location='cpu')
 
     if args.gpu_ids is not None and len(args.gpu_ids) > 0 and cfg.agent.type != 'PurePlanning':
         agent.to('cuda')
@@ -113,9 +116,10 @@ def main_mfrl_brl(cfg, args, rollout, evaluator, logger):
     if not (dist.is_available() and dist.is_initialized()):
         logger.info("We do not use distributed training, but we support data parallel in torch")
     assert args.local_rank == 0
-    if len(args.gpu_ids) > 1:
+    if len(args.gpu_ids) > 1 and cfg.agent.type != "REPLANV2":
         logger.warning("Use Data parallel to train model! It may slow down the speed when the model is small.")
         agent.to_data_parallel(device_ids=args.gpu_ids, output_device=torch.cuda.current_device())
+        agent.policy.model = agent.model
 
     if not args.evaluation:
         replay_train_rand = build_replay(cfg.replay_train_rand_cfg)
